@@ -2,6 +2,7 @@
 #include <gtest/gtest.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -33,6 +34,14 @@ static void multi_yield_coroutine(void *arg) {
 static void leak_coroutine(void *arg) {
   (void)arg;
   malloc(10); // intentional leak
+  my_context_yield(&ctx);
+}
+
+static void leak_multi_coroutine(void *arg) {
+  (void)arg;
+  malloc(10); // leak before first yield
+  my_context_yield(&ctx);
+  malloc(10); // leak after resuming
   my_context_yield(&ctx);
 }
 
@@ -103,6 +112,14 @@ static void run_leak() {
   destroy_context();
 }
 
+static void run_leak_multi() {
+  reset_context();
+  ASSERT_EQ(my_context_spawn(&ctx, leak_multi_coroutine, NULL), 1);
+  ASSERT_EQ(my_context_continue(&ctx), 1);
+  my_context_continue(&ctx);
+  destroy_context();
+}
+
 static void run_heap_uaf() {
   reset_context();
   my_context_spawn(&ctx, heap_uaf_coroutine, NULL);
@@ -129,18 +146,36 @@ static void run_stack_uaf() {
 }
 
 #if defined(__SANITIZE_ADDRESS__)
-TEST(AddressSanitizer, DetectLeak) {
+static void expect_leak(void (*func)()) {
+  int pipes[2];
+  ASSERT_EQ(pipe(pipes), 0);
   pid_t pid = fork();
   ASSERT_NE(pid, -1);
   if (pid == 0) {
-    run_leak();
+    dup2(pipes[1], STDERR_FILENO);
+    close(pipes[0]);
+    close(pipes[1]);
+    func();
     exit(0);
   }
+  close(pipes[1]);
+  std::string output;
+  char buf[256];
+  ssize_t n;
+  while ((n = read(pipes[0], buf, sizeof(buf))) > 0)
+    output.append(buf, n);
+  close(pipes[0]);
   int status = 0;
   ASSERT_EQ(waitpid(pid, &status, 0), pid);
   ASSERT_TRUE(WIFEXITED(status));
   EXPECT_EQ(WEXITSTATUS(status), 1);
+  EXPECT_NE(output.find("LeakSanitizer: detected memory leaks"),
+            std::string::npos);
 }
+
+TEST(AddressSanitizer, DetectLeak) { expect_leak(run_leak); }
+
+TEST(AddressSanitizer, DetectLeakMultiYield) { expect_leak(run_leak_multi); }
 
 TEST(AddressSanitizer, DetectHeapUseAfterFree) {
   EXPECT_EXIT(run_heap_uaf(), ::testing::ExitedWithCode(1),
@@ -158,6 +193,9 @@ TEST(AddressSanitizer, DetectHeapUAFMultiYield) {
 }
 #else
 TEST(AddressSanitizer, DetectLeak) { GTEST_SKIP() << "ASAN required"; }
+TEST(AddressSanitizer, DetectLeakMultiYield) {
+  GTEST_SKIP() << "ASAN required";
+}
 TEST(AddressSanitizer, DetectHeapUseAfterFree) {
   GTEST_SKIP() << "ASAN required";
 }
