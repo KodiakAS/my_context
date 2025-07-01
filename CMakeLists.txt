@@ -22,3 +22,6 @@ target_link_libraries(leak_test my_context)
 
 add_executable(stack_uaf_test tests/stack_uaf_test.c)
 target_link_libraries(stack_uaf_test my_context)
+
+add_executable(heap_uaf_test tests/heap_uaf_test.c)
+target_link_libraries(heap_uaf_test my_context)
