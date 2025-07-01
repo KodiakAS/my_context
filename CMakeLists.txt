@@ -1,27 +1,26 @@
 cmake_minimum_required(VERSION 3.5)
-project(my_context C)
+project(my_context C CXX)
+
+set(CMAKE_CXX_STANDARD 11)
+set(CMAKE_C_STANDARD 99)
 
 enable_testing()
 
 option(WITH_ASAN "Build with address sanitizer" OFF)
 if(WITH_ASAN)
-  set(ASAN_FLAGS "-fsanitize=address -fsanitize=leak -fsanitize-address-use-after-return=always -fno-omit-frame-pointer")
+  set(ASAN_FLAGS "-fsanitize=address -fsanitize=leak -fsanitize-address-use-after-scope -fno-omit-frame-pointer")
   set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${ASAN_FLAGS}")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${ASAN_FLAGS}")
   set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${ASAN_FLAGS}")
 endif()
 
-add_library(my_context src/ma_context.c)
+add_library(my_context src/ma_context.cpp)
 target_include_directories(my_context PUBLIC include)
 
-add_executable(context_test tests/context_test.c)
-target_link_libraries(context_test my_context)
-add_test(NAME context_test COMMAND context_test)
+find_package(Threads REQUIRED)
 
-add_executable(leak_test tests/leak_test.c)
-target_link_libraries(leak_test my_context)
+add_subdirectory(/usr/src/googletest build_gtest)
 
-add_executable(stack_uaf_test tests/stack_uaf_test.c)
-target_link_libraries(stack_uaf_test my_context)
-
-add_executable(heap_uaf_test tests/heap_uaf_test.c)
-target_link_libraries(heap_uaf_test my_context)
+add_executable(my_context_test tests/my_context_test.cpp)
+target_link_libraries(my_context_test PRIVATE my_context gtest_main Threads::Threads m)
+add_test(NAME my_context_test COMMAND my_context_test)
