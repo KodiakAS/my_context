@@ -10,6 +10,11 @@ static struct my_context ctx;
 static int counter;
 static char *dangling;
 static char *dangling_multi;
+static struct my_context nested_ctx;
+static int nested_counter;
+static int nested_spawn_ret;
+static int nested_continue_ret;
+static char *nested_dangling;
 
 static void no_yield_coroutine(void *arg) {
   (void)arg;
@@ -69,6 +74,54 @@ static void stack_uaf_coroutine(void *arg) {
   my_context_yield(&ctx);
 }
 
+static void inner_coroutine(void *arg) {
+  (void)arg;
+  nested_counter++;
+  my_context_yield(&nested_ctx);
+  nested_counter++;
+}
+
+static void inner_leak_coroutine(void *arg) {
+  (void)arg;
+  malloc(24);
+  my_context_yield(&nested_ctx);
+}
+
+static void inner_heap_uaf_coroutine(void *arg) {
+  (void)arg;
+  char *p = (char *)malloc(8);
+  nested_dangling = p;
+  free(p);
+  my_context_yield(&nested_ctx);
+}
+
+static void outer_leak_coroutine(void *arg) {
+  (void)arg;
+  my_context_init(&nested_ctx, 1 << 16);
+  my_context_spawn(&nested_ctx, inner_leak_coroutine, NULL);
+  my_context_continue(&nested_ctx);
+  my_context_destroy(&nested_ctx);
+}
+
+static void outer_heap_uaf_coroutine(void *arg) {
+  (void)arg;
+  my_context_init(&nested_ctx, 1 << 16);
+  my_context_spawn(&nested_ctx, inner_heap_uaf_coroutine, NULL);
+  my_context_yield(&ctx);
+  my_context_continue(&nested_ctx);
+  my_context_destroy(&nested_ctx);
+}
+
+static void outer_coroutine(void *arg) {
+  (void)arg;
+  counter++;
+  my_context_init(&nested_ctx, 1 << 16);
+  nested_spawn_ret = my_context_spawn(&nested_ctx, inner_coroutine, NULL);
+  nested_continue_ret = my_context_continue(&nested_ctx);
+  my_context_destroy(&nested_ctx);
+  counter++;
+}
+
 static void reset_context() {
   counter = 0;
   my_context_init(&ctx, 1 << 16);
@@ -102,6 +155,17 @@ TEST(Context, YieldMultiple) {
   EXPECT_EQ(counter, 2);
   ASSERT_EQ(my_context_continue(&ctx), 0);
   EXPECT_EQ(counter, 2);
+  destroy_context();
+}
+
+TEST(Context, NestedSwitch) {
+  reset_context();
+  nested_counter = 0;
+  ASSERT_EQ(my_context_spawn(&ctx, outer_coroutine, NULL), 0);
+  EXPECT_EQ(counter, 2);
+  EXPECT_EQ(nested_spawn_ret, 1);
+  EXPECT_EQ(nested_continue_ret, 0);
+  EXPECT_EQ(nested_counter, 2);
   destroy_context();
 }
 
@@ -142,6 +206,20 @@ static void run_stack_uaf() {
   my_context_spawn(&ctx, stack_uaf_coroutine, NULL);
   my_context_continue(&ctx); // finish coroutine
   dangling[0] = 'A';
+  destroy_context();
+}
+
+static void run_nested_leak() {
+  reset_context();
+  my_context_spawn(&ctx, outer_leak_coroutine, NULL);
+  destroy_context();
+}
+
+static void run_nested_heap_uaf() {
+  reset_context();
+  my_context_spawn(&ctx, outer_heap_uaf_coroutine, NULL);
+  nested_dangling[0] = 'D';
+  my_context_continue(&ctx);
   destroy_context();
 }
 
@@ -195,6 +273,20 @@ TEST(AddressSanitizer, DetectHeapUAFMultiYield) {
   EXPECT_EXIT(run_heap_uaf_multi(), ::testing::ExitedWithCode(1),
               "AddressSanitizer: heap-use-after-free");
 }
+
+TEST(AddressSanitizer, NestedSwitch) {
+  reset_context();
+  nested_counter = 0;
+  ASSERT_EQ(my_context_spawn(&ctx, outer_coroutine, NULL), 0);
+  destroy_context();
+}
+
+TEST(AddressSanitizer, DetectNestedLeak) { expect_leak(run_nested_leak, 24); }
+
+TEST(AddressSanitizer, DetectNestedHeapUseAfterFree) {
+  EXPECT_EXIT(run_nested_heap_uaf(), ::testing::ExitedWithCode(1),
+              "AddressSanitizer: heap-use-after-free");
+}
 #else
 TEST(AddressSanitizer, DetectLeak) { GTEST_SKIP() << "ASAN required"; }
 TEST(AddressSanitizer, DetectLeakMultiYield) {
@@ -207,6 +299,11 @@ TEST(AddressSanitizer, DetectStackUseAfterReturn) {
   GTEST_SKIP() << "ASAN required";
 }
 TEST(AddressSanitizer, DetectHeapUAFMultiYield) {
+  GTEST_SKIP() << "ASAN required";
+}
+TEST(AddressSanitizer, NestedSwitch) { GTEST_SKIP() << "ASAN required"; }
+TEST(AddressSanitizer, DetectNestedLeak) { GTEST_SKIP() << "ASAN required"; }
+TEST(AddressSanitizer, DetectNestedHeapUseAfterFree) {
   GTEST_SKIP() << "ASAN required";
 }
 #endif
