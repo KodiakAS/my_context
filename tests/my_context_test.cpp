@@ -33,7 +33,7 @@ static void multi_yield_coroutine(void *arg) {
 
 static void leak_coroutine(void *arg) {
   (void)arg;
-  malloc(10); // intentional leak
+  malloc(20); // intentional leak of 20 bytes
   my_context_yield(&ctx);
 }
 
@@ -146,7 +146,7 @@ static void run_stack_uaf() {
 }
 
 #if defined(__SANITIZE_ADDRESS__)
-static void expect_leak(void (*func)()) {
+static void expect_leak(void (*func)(), int expected_bytes) {
   int pipes[2];
   ASSERT_EQ(pipe(pipes), 0);
   pid_t pid = fork();
@@ -171,11 +171,15 @@ static void expect_leak(void (*func)()) {
   EXPECT_EQ(WEXITSTATUS(status), 1);
   EXPECT_NE(output.find("LeakSanitizer: detected memory leaks"),
             std::string::npos);
+  std::string needle = std::to_string(expected_bytes) + " byte";
+  EXPECT_NE(output.find(needle), std::string::npos);
 }
 
-TEST(AddressSanitizer, DetectLeak) { expect_leak(run_leak); }
+TEST(AddressSanitizer, DetectLeak) { expect_leak(run_leak, 20); }
 
-TEST(AddressSanitizer, DetectLeakMultiYield) { expect_leak(run_leak_multi); }
+TEST(AddressSanitizer, DetectLeakMultiYield) {
+  expect_leak(run_leak_multi, 20);
+}
 
 TEST(AddressSanitizer, DetectHeapUseAfterFree) {
   EXPECT_EXIT(run_heap_uaf(), ::testing::ExitedWithCode(1),
