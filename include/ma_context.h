@@ -17,6 +17,9 @@ struct my_context {
   void *user_data;
   void *stack;
   size_t stack_size;
+#if defined(__SANITIZE_ADDRESS__) || __has_feature(address_sanitizer)
+  void *asan_fake_stack;
+#endif
   ucontext_t base_context;
   ucontext_t spawned_context;
   int active;
