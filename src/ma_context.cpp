@@ -10,6 +10,12 @@
 #define MA_ASAN 0
 #endif
 
+#if MA_ASAN
+static __thread void *tls_fake_main = NULL;
+static __thread const void *tls_main_bottom = NULL;
+static __thread size_t tls_main_size = 0;
+#endif
+
 typedef void (*uc_func_t)(void);
 union pass_void_ptr_as_2_int {
   int a[2];
@@ -22,7 +28,13 @@ static void my_context_spawn_internal(int i0, int i1) {
   u.a[1] = i1;
   struct my_context *c = (struct my_context *)u.p;
 #if MA_ASAN
-  __sanitizer_finish_switch_fiber(c->asan_fake_stack, NULL, NULL);
+  const void *old_bottom = NULL;
+  size_t old_size = 0;
+  __sanitizer_finish_switch_fiber(tls_fake_main, &old_bottom, &old_size);
+  if (!tls_main_bottom) {
+    tls_main_bottom = old_bottom;
+    tls_main_size = old_size;
+  }
 #endif
 
   c->user_func(c->user_data);
@@ -38,7 +50,7 @@ int my_context_continue(struct my_context *c) {
   if (!c->active)
     return 0;
 #if MA_ASAN
-  __sanitizer_start_switch_fiber(&c->asan_fake_stack, c->stack, c->stack_size);
+  __sanitizer_start_switch_fiber(&tls_fake_main, c->stack, c->stack_size);
 #endif
   if (swapcontext(&c->base_context, &c->spawned_context) == -1) {
     fprintf(stderr, "swapcontext failed: %d\n", errno);
@@ -78,7 +90,8 @@ int my_context_yield(struct my_context *c) {
   if (!c->active)
     return -1;
 #if MA_ASAN
-  __sanitizer_start_switch_fiber(&c->asan_fake_stack, NULL, 0);
+  __sanitizer_start_switch_fiber(&c->asan_fake_stack, tls_main_bottom,
+                                 tls_main_size);
 #endif
   if (swapcontext(&c->spawned_context, &c->base_context) == -1)
     return -1;
